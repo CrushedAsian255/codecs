@@ -11,16 +11,17 @@
 
 typedef uint32_t pixel_t;
 
-typedef struct {
+struct bitstream {
     uint8_t* data;
     uint64_t current_read;
-} BitstreamState;
-uint8_t read_bit(BitstreamState* state) {
+};
+
+uint8_t read_bit(struct bitstream* state) {
     uint8_t output = (state->data[state->current_read>>3] >> (state->current_read&0x7))&1;
     state->current_read++;
     return output;
 }
-uint64_t read_bits(BitstreamState* state, uint8_t bit_count) {
+uint64_t read_bits(struct bitstream* state, uint8_t bit_count) {
     uint64_t output = 0;
     for(int i = 0; i < bit_count; i++) {
         output |= read_bit(state) << i;
@@ -28,13 +29,13 @@ uint64_t read_bits(BitstreamState* state, uint8_t bit_count) {
     return output;
 }
 
-typedef struct {
+struct image_data {
     pixel_t* data;
     uint16_t width;
     uint16_t height;
-} ImageData;
-ImageData malloc_new_image(uint16_t width, uint16_t height) {
-    ImageData output = {
+};
+struct image_data malloc_new_image(uint16_t width, uint16_t height) {
+    struct image_data output = {
         .data = malloc(width*height*4),
         .width = width,
         .height = height
@@ -42,7 +43,7 @@ ImageData malloc_new_image(uint16_t width, uint16_t height) {
     memset(output.data,0,width*height*4);
     return output;
 }
-void write_image(const ImageData* image_data, const char* output_file_name) {
+void write_image(const struct image_data* image_data, const char* output_file_name) {
     uint8_t has_alpha = 0;
     for(int i = 0; i < image_data->width*image_data->height; i++) {
         if((image_data->data[i]&0xff000000) != (image_data->data[0]&0xff000000)) {
@@ -69,12 +70,12 @@ void write_image(const ImageData* image_data, const char* output_file_name) {
     free(output_name_buffer);
 }
 
-typedef enum {
+enum transform_type {
     PREDICTOR_TRANSFORM,
     COLOR_TRANSFORM,
     SUBTRACT_GREEN_TRANSFORM,
     COLOR_INDEXING_TRANSFORM
-} WebPTransformType;
+};
 
 const char* transform_names[4] = {
     "Predictor",
@@ -83,7 +84,7 @@ const char* transform_names[4] = {
     "Colour Index"
 };
 
-void decode_image(BitstreamState* bitstream, ImageData* image, bool is_main_image) {
+void decode_image(struct bitstream* bitstream, struct image_data* image, bool is_main_image) {
     uint32_t colour_cache_size = 0;
     if(read_bit(bitstream)) {
         colour_cache_size = 1<<read_bits(bitstream,4);
@@ -111,7 +112,7 @@ int main(int argc, char* argv[]) {
     size_t read_data_count = fread(file_data,1,file_length,input_file);
     assert(read_data_count == file_length, "Error: unable to read complete file");
     fclose(input_file);
-    BitstreamState file = {
+    struct bitstream file = {
         .data = file_data,
         .current_read = 0,
     };
@@ -126,15 +127,15 @@ int main(int argc, char* argv[]) {
     uint8_t use_alpha = read_bits(&file,1);
     printf("Image dimensions: %d x %d %s\n",image_width,image_height,use_alpha?"with alpha":"");   
     assert(read_bits(&file,3)==0,"Error: invalid WebP version");
-    WebPTransformType transforms[4];
+    enum transform_type transforms[4];
     uint8_t transform_count = 0;
 
     uint32_t transform_predictor_block_size = 0;
-    ImageData transform_predictor_subimage;
+    struct image_data transform_predictor_subimage;
 
     while(read_bit(&file)) {
         assert(transform_count < 4,"Error: too many image transforms");
-        WebPTransformType transform_type = read_bits(&file,2);
+        enum transform_type transform_type = read_bits(&file,2);
         printf("Transform %s\n",transform_names[transform_type]);
         switch(transform_type) {
             case SUBTRACT_GREEN_TRANSFORM:
@@ -154,7 +155,7 @@ int main(int argc, char* argv[]) {
         transforms[transform_count] = transform_type;
         transform_count++;
     }
-    ImageData image = malloc_new_image(image_width,image_height);
+    struct image_data image = malloc_new_image(image_width,image_height);
     for(int i = transform_count-1; i >= 0; i--) {
         switch(transforms[i]) {
             default:
