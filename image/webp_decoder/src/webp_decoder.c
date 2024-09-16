@@ -89,12 +89,18 @@ struct prefix_code_entry {
 };
 struct prefix_code {
     struct prefix_code_entry *table;
-    symbol_t total_bits;
+    uint8_t total_bits;
 };
 void print_prefix_code(const struct prefix_code code) {
     for(int i = 0; i < 1<<code.total_bits; i++) {
         printf("%d %d\n",code.table[i].bits_real, code.table[i].decoded_symbol);
     }
+}
+symbol_t read_prefix_code(struct bitstream* bitstream, const struct prefix_code code) {
+    uint64_t idx = read_bits(bitstream, code.total_bits);
+    bitstream->current_read -= code.total_bits;
+    bitstream->current_read += code.table[idx].bits_real;
+    return code.table[idx].decoded_symbol;
 }
 
 // ll prefix codes: low level code-length codes
@@ -103,7 +109,6 @@ static const int llcode_orders[llcodes] = {
     17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 };
 void read_code_complex(struct bitstream* bitstream, struct prefix_code* code, symbol_t alphabet_size) {
-    todo("complex prefix code: not fully implemented");
     uint8_t code_lengths = read_bits(bitstream,4) + 4;
     uint8_t llcode_lengths[llcodes] = {0};
     for(int i = 0; i < code_lengths; i++) {
@@ -116,8 +121,8 @@ void read_code_complex(struct bitstream* bitstream, struct prefix_code* code, sy
     if(read_bit(bitstream)) {
         alphabet_limit = read_bits(bitstream,read_bits(bitstream,3)*2 + 2);
     }
-    printf("%d\n",alphabet_limit);
     assert(alphabet_limit <= alphabet_size, "Alphabet too big");
+    todo("complex prefix code: not fully implemented");
 }
 void read_code_simple(struct bitstream* bitstream, struct prefix_code* code, symbol_t alphabet_size) { 
     symbol_t multiple_symbols = read_bit(bitstream);
@@ -160,9 +165,20 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
     printf("Colour cache size: %d\n",colour_cache_size);
 
     uint32_t prefix_group_count = 1;
+    uint8_t meta_prefix_block_size = 0;
 
     if(is_main_image && read_bit(bitstream)) {
-        todo("Read full bitstream");
+        meta_prefix_block_size = read_bits(bitstream,3)+2;
+        uint32_t meta_prefix_image_width = ceil_div(image->width,meta_prefix_block_size);
+        uint32_t meta_prefix_image_height = ceil_div(image->height,meta_prefix_block_size);
+        struct image_data meta_prefix_image = malloc_new_image(meta_prefix_image_width,meta_prefix_image_height);
+        printf("Decoding meta-prefix subimage\n");
+        decode_image(bitstream,&meta_prefix_image,0);
+        for(int i = 0; i < meta_prefix_image_width*meta_prefix_image_height; i++) {
+            symbol_t meta_prefix_group_id = (meta_prefix_image.data[i]>>8)&0xffff;
+            if(meta_prefix_group_id >= prefix_group_count) prefix_group_count = meta_prefix_group_id+1;
+        }
+        printf("Total meta-prefix groups: %d\n",prefix_group_count);
     }
 
     struct prefix_group* groups = malloc(sizeof(struct prefix_group)*prefix_group_count);
@@ -170,6 +186,21 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
 
     for(int i = 0; i < prefix_group_count; i++) {
         decode_prefix_group(bitstream,&groups[i],colour_cache_size);
+    }
+
+    for(int y = 0; y < image->height; y++) {
+        for(int x = 0; x < image->width; x++) {
+            const struct prefix_group group = groups[0];
+            symbol_t g = read_prefix_code(bitstream,group.codes[0]);
+            if(g < 256) {
+                symbol_t r = read_prefix_code(bitstream,group.codes[1]);
+                symbol_t b = read_prefix_code(bitstream,group.codes[2]);
+                symbol_t a = read_prefix_code(bitstream,group.codes[3]);
+                image->data[y*image->width+x]=a<<24 | r<<16 | g<<8 | b;
+            } else {
+                todo("not implemented");
+            }
+        }
     }
 
     for(int i = 0; i < prefix_group_count; i++) {
@@ -226,9 +257,10 @@ int main(int argc, char* argv[]) {
                 uint32_t subimage_width = ceil_div(image_width,transform_predictor_block_size);
                 uint32_t subimage_height = ceil_div(image_height,transform_predictor_block_size);
                 transform_predictor_subimage = malloc_new_image(subimage_width,subimage_height);
+                printf("Decoding predictor subimage\n");
                 decode_image(&file,&transform_predictor_subimage,false);
                 write_image(&transform_predictor_subimage,"transform_predictor");
-            }
+            }; break;
             default:
                 printf("Not implemented transform: %s\n",transform_names[transform_type]);
                 exit(1);
@@ -237,6 +269,9 @@ int main(int argc, char* argv[]) {
         transform_count++;
     }
     struct image_data image = malloc_new_image(image_width,image_height);
+    printf("Decoding main image\n");
+    decode_image(&file,&image,true);
+    write_image(&image,"image_pretransform");
     for(int i = transform_count-1; i >= 0; i--) {
         switch(transforms[i]) {
             default:
