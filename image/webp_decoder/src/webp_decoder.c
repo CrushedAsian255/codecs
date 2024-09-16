@@ -10,12 +10,12 @@
 #define ceil_div(n,d) (((n)+(d)-1)/(d));
 
 typedef uint32_t pixel_t;
+typedef uint16_t symbol_t;
 
 struct bitstream {
     uint8_t* data;
     uint64_t current_read;
 };
-
 uint8_t read_bit(struct bitstream* state) {
     uint8_t output = (state->data[state->current_read>>3] >> (state->current_read&0x7))&1;
     state->current_read++;
@@ -76,7 +76,6 @@ enum transform_type {
     SUBTRACT_GREEN_TRANSFORM,
     COLOR_INDEXING_TRANSFORM
 };
-
 const char* transform_names[4] = {
     "Predictor",
     "Colour",
@@ -84,12 +83,80 @@ const char* transform_names[4] = {
     "Colour Index"
 };
 
+struct prefix_code_entry {
+    symbol_t decoded_symbol;
+    uint8_t bits_real;
+};
+struct prefix_code {
+    struct prefix_code_entry *table;
+    symbol_t total_bits;
+};
+void print_prefix_code(const struct prefix_code code) {
+    for(int i = 0; i < 1<<code.total_bits; i++) {
+        printf("%d %d\n",code.table[i].bits_real, code.table[i].decoded_symbol);
+    }
+}
+
+// ll prefix codes: low level code-length codes
+static const int llcodes = 19;
+static const int llcode_orders[llcodes] = {
+    17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+};
+void read_code_complex(struct bitstream* bitstream, struct prefix_code* code, symbol_t alphabet_size) {
+    todo("complex prefix code: not fully implemented");
+    uint8_t code_lengths = read_bits(bitstream,4) + 4;
+    uint8_t llcode_lengths[llcodes] = {0};
+    for(int i = 0; i < code_lengths; i++) {
+        llcode_lengths[llcode_orders[i]] = read_bits(bitstream,3);
+    }
+    for(int i = 0; i < llcodes; i++) {
+        printf("%d: %d\n",i,llcode_lengths[i]);
+    }
+    symbol_t alphabet_limit = alphabet_size;
+    if(read_bit(bitstream)) {
+        alphabet_limit = read_bits(bitstream,read_bits(bitstream,3)*2 + 2);
+    }
+    printf("%d\n",alphabet_limit);
+    assert(alphabet_limit <= alphabet_size, "Alphabet too big");
+}
+void read_code_simple(struct bitstream* bitstream, struct prefix_code* code, symbol_t alphabet_size) { 
+    symbol_t multiple_symbols = read_bit(bitstream);
+    code->total_bits = multiple_symbols;
+    code->table = malloc((multiple_symbols+1)*sizeof(struct prefix_code));
+    code->table[0].bits_real = multiple_symbols;
+    code->table[0].decoded_symbol = read_bits(bitstream,read_bit(bitstream)?8:1);
+    if(multiple_symbols) {
+        code->table[1].bits_real = multiple_symbols;
+        code->table[1].decoded_symbol = read_bits(bitstream,8);
+    }
+}
+
+struct prefix_group {
+    struct prefix_code codes[5];
+};
+void decode_prefix_group(struct bitstream* bitstream, struct prefix_group* prefix_group, symbol_t cache_size) {
+    for(int i = 0; i < 5; i++) {
+        symbol_t alphabet_size = 256;
+        if(i == 0) alphabet_size += cache_size + 24;
+        if(i == 4) alphabet_size = 40;
+        if(read_bit(bitstream)) {
+            read_code_simple(bitstream, &(prefix_group->codes[i]),alphabet_size);
+        } else {
+            read_code_complex(bitstream, &(prefix_group->codes[i]),alphabet_size);
+        }
+        printf("Channel %d\n",i);
+        print_prefix_code(prefix_group->codes[i]);
+    }
+}
+
 void decode_image(struct bitstream* bitstream, struct image_data* image, bool is_main_image) {
-    uint32_t colour_cache_size = 0;
+    symbol_t colour_cache_size = 0;
     if(read_bit(bitstream)) {
         colour_cache_size = 1<<read_bits(bitstream,4);
     }
     pixel_t* colour_cache = malloc(4*colour_cache_size);
+    memset(colour_cache,0,colour_cache_size*4);
+    assert(colour_cache!=NULL,"Error allocating memory");
     printf("Colour cache size: %d\n",colour_cache_size);
 
     uint32_t prefix_group_count = 1;
@@ -97,7 +164,21 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
     if(is_main_image && read_bit(bitstream)) {
         todo("Read full bitstream");
     }
+
+    struct prefix_group* groups = malloc(sizeof(struct prefix_group)*prefix_group_count);
+    assert(groups!=NULL,"Error allocating memory");
+
+    for(int i = 0; i < prefix_group_count; i++) {
+        decode_prefix_group(bitstream,&groups[i],colour_cache_size);
+    }
+
+    for(int i = 0; i < prefix_group_count; i++) {
+        for(int j = 0; j < 5; j++) {
+            free(groups[i].codes[j].table);
+        }
+    }
     free(colour_cache);
+    free(groups);
 }
 
 int main(int argc, char* argv[]) {
