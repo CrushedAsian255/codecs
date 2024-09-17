@@ -399,6 +399,48 @@ void apply_predictors(struct image_data* image, const struct image_data* predict
                     case 4:
                         predicted_pixel = TL;
                         break;
+                    case 5: {
+                        uint8_t a = (((ALPHA(L) + ALPHA(TR)) / 2) + ALPHA(T))/2;
+                        uint8_t r = (((RED(L) + RED(TR)) / 2) + RED(T))/2;
+                        uint8_t g = (((GREEN(L) + GREEN(TR)) / 2) + GREEN(T))/2;
+                        uint8_t b = (((BLUE(L) + BLUE(TR)) / 2) + BLUE(T))/2;
+                        predicted_pixel = a<<24 | r<<16 | g<<8 | b;
+                    } break;
+                    case 6: {
+                        uint8_t a = ((ALPHA(L) + ALPHA(TL)) / 2);
+                        uint8_t r = ((RED(L) + RED(TL)) / 2);
+                        uint8_t g = ((GREEN(L) + GREEN(TL)) / 2);
+                        uint8_t b = ((BLUE(L) + BLUE(TL)) / 2);
+                        predicted_pixel = a<<24 | r<<16 | g<<8 | b;
+                    } break;
+                    case 7: {
+                        uint8_t a = ((ALPHA(L) + ALPHA(T)) / 2);
+                        uint8_t r = ((RED(L) + RED(T)) / 2);
+                        uint8_t g = ((GREEN(L) + GREEN(T)) / 2);
+                        uint8_t b = ((BLUE(L) + BLUE(T)) / 2);
+                        predicted_pixel = a<<24 | r<<16 | g<<8 | b;
+                    } break;
+                    case 8: {
+                        uint8_t a = ((ALPHA(TL) + ALPHA(T)) / 2);
+                        uint8_t r = ((RED(TL) + RED(T)) / 2);
+                        uint8_t g = ((GREEN(TL) + GREEN(T)) / 2);
+                        uint8_t b = ((BLUE(TL) + BLUE(T)) / 2);
+                        predicted_pixel = a<<24 | r<<16 | g<<8 | b;
+                    } break;
+                    case 9: {
+                        uint8_t a = ((ALPHA(T) + ALPHA(TR)) / 2);
+                        uint8_t r = ((RED(T) + RED(TR)) / 2);
+                        uint8_t g = ((GREEN(T) + GREEN(TR)) / 2);
+                        uint8_t b = ((BLUE(T) + BLUE(TR)) / 2);
+                        predicted_pixel = a<<24 | r<<16 | g<<8 | b;
+                    } break;
+                    case 10: {
+                        uint8_t a = (((ALPHA(L) + ALPHA(TL)) / 2) + ((ALPHA(T) + ALPHA(TR)) / 2))/2;
+                        uint8_t r = (((RED(L) + RED(TL)) / 2) + ((RED(T) + RED(TR)) / 2))/2;
+                        uint8_t g = (((GREEN(L) + GREEN(TL)) / 2) + ((GREEN(T) + GREEN(TR)) / 2))/2;
+                        uint8_t b = (((BLUE(L) + BLUE(TL)) / 2) + ((BLUE(T) + BLUE(TR)) / 2))/2;
+                        predicted_pixel = a<<24 | r<<16 | g<<8 | b;
+                    } break;
                     case 11: {
                         int pAlpha = ALPHA(L) + ALPHA(T) - ALPHA(TL);
                         int pRed = RED(L) + RED(T) - RED(TL);
@@ -413,6 +455,17 @@ void apply_predictors(struct image_data* image, const struct image_data* predict
                         uint8_t r = clamp(RED(L) + RED(T) - RED(TL));
                         uint8_t g = clamp(GREEN(L) + GREEN(T) - GREEN(TL));
                         uint8_t b = clamp(BLUE(L) + BLUE(T) - BLUE(TL));
+                        predicted_pixel = a<<24 | r<<16 | g<<8 | b;
+                    } break;
+                    case 13: {
+                        uint8_t a_ = (ALPHA(L) + ALPHA(T))/2;
+                        uint8_t a = clamp(a_ + (a_ - ALPHA(TL)) / 2);
+                        uint8_t r_ = (RED(L) + RED(T))/2;
+                        uint8_t r = clamp(r_ + (r_ - RED(TL)) / 2);
+                        uint8_t g_ = (GREEN(L) + GREEN(T))/2;
+                        uint8_t g = clamp(g_ + (g_ - GREEN(TL)) / 2);
+                        uint8_t b_ = (BLUE(L) + BLUE(T))/2;
+                        uint8_t b = clamp(b_ + (b_ - BLUE(TL)) / 2);
                         predicted_pixel = a<<24 | r<<16 | g<<8 | b;
                     } break;
                     default: 
