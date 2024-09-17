@@ -4,7 +4,8 @@ def decode_huffman(bit_lengths):
         largest_bits = max(largest_bits,bits)
     starting_points = [0]*(largest_bits+1)
     for bits in bit_lengths:
-        starting_points[bits] += 1
+        if bits > 0:
+            starting_points[bits] += 1
     for i in range(1,largest_bits+1):
         starting_points[i] += starting_points[i-1]
     actual_codes = [None]*starting_points[largest_bits]
@@ -12,7 +13,6 @@ def decode_huffman(bit_lengths):
         if bits != 0:
             actual_codes[starting_points[bits-1]] = (idx,bits)
             starting_points[bits-1] += 1
-    actual_codes.sort(key=lambda a: a[1])
 
     code = -1
     bit = 0
@@ -26,4 +26,4 @@ def decode_huffman(bit_lengths):
             huffman[x]=(symbol,bits)
     return huffman
 
-print(decode_huffman([2,3,1,3]))
+print(decode_huffman([3,3,3,3,3,0,0,0,0,0,0,0,0,0,0,0,3,0,2]))
