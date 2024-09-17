@@ -500,16 +500,9 @@ void apply_subtract_green(struct image_data* image) {
 }
 
 int8_t colour_transform_delta(uint8_t t_, uint8_t c_) {
-    int32_t t = t_;
-    if(t > 128) {
-        t = -(~t&0xff)-1;
-    }
-    int32_t c = c_;
-    if(c > 128) {
-        c = -(~c&0xff)-1;
-    }
-    int32_t o = (t*c) >> 5;
-    return o&0xff;
+    int32_t t = t_ >= 128 ? -256+t_ : t_;
+    int32_t c = c_ >= 128 ? -256+c_ : c_;
+    return ((t*c) >> 5)&0xff;
 }
 
 void apply_colour_transform(struct image_data* image, const struct image_data* colour_info_map, uint8_t block_scale) {
