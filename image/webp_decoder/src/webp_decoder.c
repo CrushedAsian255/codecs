@@ -159,7 +159,7 @@ void read_code_complex(struct bitstream* bitstream, struct prefix_code* code, sy
     }
     symbol_t max_entry_count = alphabet_size;
     if(read_bit(bitstream)) {
-        max_entry_count = read_bits(bitstream,read_bits(bitstream,3)*2 + 2);
+        max_entry_count = read_bits(bitstream,read_bits(bitstream,3)*2 + 2) + 2;
     }
     assert(max_entry_count <= alphabet_size, "Alphabet too big");
     struct prefix_code temp_prefix_code;
@@ -224,15 +224,42 @@ void decode_prefix_group(struct bitstream* bitstream, struct prefix_group* prefi
         symbol_t alphabet_size = 256;
         if(i == 0) alphabet_size += cache_size + 24;
         if(i == 4) alphabet_size = 40;
-        printf("Channel %d (%d symbols): ",i,alphabet_size);
         if(read_bit(bitstream)) {
-            printf("Simple code\n");
             read_code_simple(bitstream, &(prefix_group->codes[i]),alphabet_size);
         } else {
             read_code_complex(bitstream, &(prefix_group->codes[i]),alphabet_size);
-            printf("Prefix code, %d bits\n",prefix_group->codes[i].total_bits);
         }
     }
+}
+
+static const int8_t lz77_distance_neighbourhood[240] = {
+     0, 1,  1, 0,  1, 1, -1, 1,  0, 2,  2, 0,  1, 2,
+    -1, 2,  2, 1, -2, 1,  2, 2, -2, 2,  0, 3,  3, 0,
+     1, 3, -1, 3,  3, 1, -3, 1,  2, 3, -2, 3,  3, 2,
+    -3, 2,  0, 4,  4, 0,  1, 4, -1, 4,  4, 1, -4, 1,
+     3, 3, -3, 3,  2, 4, -2, 4,  4, 2, -4, 2,  0, 5,
+     3, 4, -3, 4,  4, 3, -4, 3,  5, 0,  1, 5, -1, 5, 
+     5, 1, -5, 1,  2, 5, -2, 5,  5, 2, -5, 2,  4, 4,
+    -4, 4,  3, 5, -3, 5,  5, 3, -5, 3,  0, 6,  6, 0,
+     1, 6, -1, 6,  6, 1, -6, 1,  2, 6, -2, 6,  6, 2,
+    -6, 2,  4, 5, -4, 5,  5, 4, -5, 4,  3, 6, -3, 6,
+     6, 3, -6, 3,  0, 7,  7, 0,  1, 7, -1, 7,  5, 5,
+    -5, 5,  7, 1, -7, 1,  4, 6, -4, 6,  6, 4, -6, 4, 
+     2, 7, -2, 7,  7, 2, -7, 2,  3, 7, -3, 7,  7, 3,
+    -7, 3,  5, 6, -5, 6,  6, 5, -6, 5,  8, 0,  4, 7,
+    -4, 7,  7, 4, -7, 4,  8, 1,  8, 2,  6, 6, -6, 6,
+     8, 3,  5, 7, -5, 7,  7, 5, -7, 5,  8, 4,  6, 7,
+    -6, 7,  7, 6, -7, 6,  8, 5,  7, 7, -7, 7,  8, 6,
+    8, 7
+};
+
+uint64_t read_lz77_code(struct bitstream* bitstream, symbol_t prefix_code) {
+    if(prefix_code < 4) {
+        return prefix_code;
+    }
+    int extra_bits = (prefix_code - 2) >> 1;
+    int offset = (2 + (prefix_code & 1)) << extra_bits;
+    return offset + read_bits(bitstream,extra_bits);
 }
 
 void decode_image(struct bitstream* bitstream, struct image_data* image, bool is_main_image) {
@@ -246,15 +273,17 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
     printf("Colour cache size: %d\n",colour_cache_size);
 
     uint32_t prefix_group_count = 1;
-    uint8_t meta_prefix_block_size = 0;
+    uint8_t meta_prefix_bits = 0;
+    struct image_data meta_prefix_image;
 
     if(is_main_image && read_bit(bitstream)) {
-        meta_prefix_block_size = read_bits(bitstream,3)+2;
-        uint32_t meta_prefix_image_width = ceil_div(image->width,meta_prefix_block_size);
-        uint32_t meta_prefix_image_height = ceil_div(image->height,meta_prefix_block_size);
-        struct image_data meta_prefix_image = malloc_new_image(meta_prefix_image_width,meta_prefix_image_height);
+        meta_prefix_bits = read_bits(bitstream,3)+2;
+        uint32_t meta_prefix_image_width = ceil_div(image->width,1<<meta_prefix_bits);
+        uint32_t meta_prefix_image_height = ceil_div(image->height,1<<meta_prefix_bits);
+        meta_prefix_image = malloc_new_image(meta_prefix_image_width,meta_prefix_image_height);
         printf("Decoding meta-prefix subimage of size %d x %d\n",meta_prefix_image_width,meta_prefix_image_height);
         decode_image(bitstream,&meta_prefix_image,0);
+        write_image(&meta_prefix_image,"meta-prefix");
         for(int i = 0; i < meta_prefix_image_width*meta_prefix_image_height; i++) {
             symbol_t meta_prefix_group_id = (meta_prefix_image.data[i]>>8)&0xffff;
             if(meta_prefix_group_id >= prefix_group_count) prefix_group_count = meta_prefix_group_id+1;
@@ -269,16 +298,36 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
         decode_prefix_group(bitstream,&groups[i],colour_cache_size);
     }
 
-    for(int pixel = 0; pixel < image->height * image->width; pixel++) {
-        const struct prefix_group group = groups[0];
+    for(int pixel = 0; pixel < image->height * image->width;) {
+        int group_num = 0;
+        if(prefix_group_count > 1) {
+            uint32_t x = (pixel % image->width) >> meta_prefix_bits;
+            uint32_t y = (pixel / image->width) >> meta_prefix_bits;
+            pixel_t entropy_pixel = meta_prefix_image.data[meta_prefix_image.width * y + x];
+            group_num = (entropy_pixel >> 8) & 0xffff;
+        }
+        const struct prefix_group group = groups[group_num];
         symbol_t g = read_from_prefix_code(bitstream,group.codes[0]);
         if(g < 256) {
             symbol_t r = read_from_prefix_code(bitstream,group.codes[1]);
             symbol_t b = read_from_prefix_code(bitstream,group.codes[2]);
             symbol_t a = read_from_prefix_code(bitstream,group.codes[3]);
-            image->data[pixel]=a<<24 | r<<16 | g<<8 | b;
+            image->data[pixel++]=a<<24 | r<<16 | g<<8 | b;
         } else if (g < 256+24) {
-            todo("not implemented");
+            uint64_t length = read_lz77_code(bitstream,g-256);
+            symbol_t distance_prefix = read_from_prefix_code(bitstream,group.codes[4]);
+            uint64_t distance_code = read_lz77_code(bitstream,distance_prefix);
+            int64_t distance = distance_code - 120;
+            if(distance_code < 120) {
+                int8_t x_off = lz77_distance_neighbourhood[(distance_code<<1)];
+                int8_t y_off = lz77_distance_neighbourhood[(distance_code<<1)+1];
+                distance = x_off + y_off*image->width;
+            }
+            if(distance < 1) {distance = 1;}
+            for(int64_t i = 0; i <= length; i++) {
+                image->data[pixel+i] = image->data[pixel-distance+i];
+            }
+            pixel += length+1;
         } else {
             todo("not implemented");
         }
