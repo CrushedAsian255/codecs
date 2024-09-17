@@ -262,10 +262,16 @@ uint64_t read_lz77_code(struct bitstream* bitstream, symbol_t prefix_code) {
     return offset + read_bits(bitstream,extra_bits);
 }
 
+uint32_t colour_hash(pixel_t pixel, uint8_t colour_cache_size) {
+    return ((0x1e35a7bd * pixel) & 0xFFFFFFFF) >> (32 - colour_cache_size);
+}
+
 void decode_image(struct bitstream* bitstream, struct image_data* image, bool is_main_image) {
     symbol_t colour_cache_size = 0;
+    symbol_t colour_cache_bits = 0;
     if(read_bit(bitstream)) {
-        colour_cache_size = 1<<read_bits(bitstream,4);
+        colour_cache_bits = read_bits(bitstream,4);
+        colour_cache_size = 1<<colour_cache_bits;
     }
     pixel_t* colour_cache = malloc(4*colour_cache_size);
     memset(colour_cache,0,colour_cache_size*4);
@@ -313,6 +319,9 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
             symbol_t b = read_from_prefix_code(bitstream,group.codes[2]);
             symbol_t a = read_from_prefix_code(bitstream,group.codes[3]);
             image->data[pixel++]=a<<24 | r<<16 | g<<8 | b;
+            if(colour_cache_bits) {
+                colour_cache[colour_hash(a<<24 | r<<16 | g<<8 | b,colour_cache_bits)] = a<<24 | r<<16 | g<<8 | b;
+            }
         } else if (g < 256+24) {
             uint64_t length = read_lz77_code(bitstream,g-256);
             symbol_t distance_prefix = read_from_prefix_code(bitstream,group.codes[4]);
@@ -325,11 +334,14 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
             }
             if(distance < 1) {distance = 1;}
             for(int64_t i = 0; i <= length; i++) {
+                if(colour_cache_bits) {
+                    colour_cache[colour_hash(image->data[pixel-distance+i],colour_cache_bits)] = image->data[pixel-distance+i];
+                }
                 image->data[pixel+i] = image->data[pixel-distance+i];
             }
             pixel += length+1;
         } else {
-            todo("not implemented");
+            image->data[pixel++] = colour_cache[g-(256+24)];
         }
     }
 
