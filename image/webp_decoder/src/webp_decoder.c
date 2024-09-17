@@ -372,15 +372,24 @@ void apply_predictors(struct image_data* image, const struct image_data* predict
             } else if(y == 0) {
                 predicted_pixel = image->data[x-1];
             } else {
-                pixel_t L  = image->data[y*image->width+x-1];
-                pixel_t T  = image->data[(y-1)*image->width+x];
-                pixel_t TL = image->data[(y-1)*image->width+x-1];
-                pixel_t TR = image->data[(y-1)*image->width+x+1];
+                pixel_t L  = image->data[(y*image->width)+x-1];
+                pixel_t T  = image->data[((y-1)*image->width)+x];
+                pixel_t TL = image->data[((y-1)*image->width)+(x-1)];
+                pixel_t TR = image->data[((y-1)*image->width)+(x+1)];
                 
                 switch(predictor) {
                     case 0:
                         predicted_pixel = 0xff000000;
                         break;
+                    case 11: {
+                        int pAlpha = ALPHA(L) + ALPHA(T) - ALPHA(TL);
+                        int pRed = RED(L) + RED(T) - RED(TL);
+                        int pGreen = GREEN(L) + GREEN(T) - GREEN(TL);
+                        int pBlue = BLUE(L) + BLUE(T) - BLUE(TL);
+                        int pL = abs(pAlpha - ALPHA(L)) + abs(pRed - RED(L)) + abs(pGreen - GREEN(L)) + abs(pBlue - BLUE(L));
+                        int pT = abs(pAlpha - ALPHA(T)) + abs(pRed - RED(T)) + abs(pGreen - GREEN(T)) + abs(pBlue - BLUE(T));
+                        predicted_pixel = (pL<pT)?L:T;
+                    } break;
                     default: 
                         printf("%d\n",predictor);
                         todo("all the predictors");
