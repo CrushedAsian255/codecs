@@ -72,9 +72,9 @@ void write_image(const struct image_data* image_data, const char* output_file_na
 
 enum transform_type {
     PREDICTOR_TRANSFORM,
-    COLOR_TRANSFORM,
+    COLOUR_TRANSFORM,
     SUBTRACT_GREEN_TRANSFORM,
-    COLOR_INDEXING_TRANSFORM
+    COLOUR_INDEXING_TRANSFORM
 };
 const char* transform_names[4] = {
     "Predictor",
@@ -359,6 +359,12 @@ pixel_t add_pixels(pixel_t a, pixel_t b) {
     return o;
 }
 
+uint8_t clamp(int32_t x) {
+    if(x<0) return 0;
+    if(x>255) return 255;
+    return x;
+}
+
 void apply_predictors(struct image_data* image, const struct image_data* predictor_map, uint8_t block_scale) {
     for(int y = 0; y < image->height; y++) {
         for(int x = 0; x < image->width; x++) {
@@ -381,6 +387,18 @@ void apply_predictors(struct image_data* image, const struct image_data* predict
                     case 0:
                         predicted_pixel = 0xff000000;
                         break;
+                    case 1:
+                        predicted_pixel = L;
+                        break;
+                    case 2:
+                        predicted_pixel = T;
+                        break;
+                    case 3:
+                        predicted_pixel = TR;
+                        break;
+                    case 4:
+                        predicted_pixel = TL;
+                        break;
                     case 11: {
                         int pAlpha = ALPHA(L) + ALPHA(T) - ALPHA(TL);
                         int pRed = RED(L) + RED(T) - RED(TL);
@@ -389,6 +407,13 @@ void apply_predictors(struct image_data* image, const struct image_data* predict
                         int pL = abs(pAlpha - ALPHA(L)) + abs(pRed - RED(L)) + abs(pGreen - GREEN(L)) + abs(pBlue - BLUE(L));
                         int pT = abs(pAlpha - ALPHA(T)) + abs(pRed - RED(T)) + abs(pGreen - GREEN(T)) + abs(pBlue - BLUE(T));
                         predicted_pixel = (pL<pT)?L:T;
+                    } break;
+                    case 12: {
+                        uint8_t a = clamp(ALPHA(L) + ALPHA(T) - ALPHA(TL));
+                        uint8_t r = clamp(RED(L) + RED(T) - RED(TL));
+                        uint8_t g = clamp(GREEN(L) + GREEN(T) - GREEN(TL));
+                        uint8_t b = clamp(BLUE(L) + BLUE(T) - BLUE(TL));
+                        predicted_pixel = a<<24 | r<<16 | g<<8 | b;
                     } break;
                     default: 
                         printf("%d\n",predictor);
@@ -406,6 +431,37 @@ void apply_subtract_green(struct image_data* image) {
         output_pixel |= (BLUE(image->data[i])+GREEN(image->data[i])) & 0xff;
         output_pixel |= ((RED(image->data[i])+GREEN(image->data[i])) & 0xff)<<16;
         image->data[i]=output_pixel;
+    }
+}
+
+int8_t colour_transform_delta(uint8_t t_, uint8_t c_) {
+    int32_t t = t_;
+    if(t > 128) {
+        t = -(~t&0xff)-1;
+    }
+    int32_t c = c_;
+    if(c > 128) {
+        c = -(~c&0xff)-1;
+    }
+    int32_t o = (t*c) >> 5;
+    return o&0xff;
+}
+
+void apply_colour_transform(struct image_data* image, const struct image_data* colour_info_map, uint8_t block_scale) {
+    for(int y = 0; y < image->height; y++) {
+        for(int x = 0; x < image->width; x++) {
+            pixel_t pixel = image->data[y*image->width+x];
+            pixel_t ctx_pixel = colour_info_map->data[colour_info_map->width * (y >> block_scale) + (x >> block_scale)];
+            uint8_t red_to_blue = (uint8_t)RED(ctx_pixel);
+            uint8_t green_to_blue = (uint8_t)GREEN(ctx_pixel);
+            uint8_t green_to_red = (uint8_t)BLUE(ctx_pixel);
+            uint8_t temp_red = RED(pixel);
+            uint8_t temp_blue = BLUE(pixel);
+            temp_red += colour_transform_delta(green_to_red,GREEN(pixel));
+            temp_blue += colour_transform_delta(green_to_blue,GREEN(pixel));
+            temp_blue += colour_transform_delta(red_to_blue,temp_red&0xff);
+            image->data[y*image->width+x] = pixel&0xff00ff00 | (temp_red&0xff) << 16 | (temp_blue&0xff);
+        }
     }
 }
 
@@ -444,6 +500,9 @@ int main(int argc, char* argv[]) {
     uint32_t transform_predictor_block_scale = 0;
     struct image_data transform_predictor_subimage;
 
+    uint32_t transform_colour_block_scale = 0;
+    struct image_data transform_colour_subimage;
+
     while(read_bit(&file)) {
         assert(transform_count < 4,"Error: too many image transforms");
         enum transform_type transform_type = read_bits(&file,2);
@@ -460,6 +519,15 @@ int main(int argc, char* argv[]) {
                 decode_image(&file,&transform_predictor_subimage,false);
                 write_image(&transform_predictor_subimage,"transform_predictor");
             }; break;
+            case COLOUR_TRANSFORM: {
+                transform_colour_block_scale = read_bits(&file,3)+2;
+                uint32_t subimage_width = ceil_div(image_width,1<<transform_colour_block_scale);
+                uint32_t subimage_height = ceil_div(image_height,1<<transform_colour_block_scale);
+                transform_colour_subimage = malloc_new_image(subimage_width, subimage_height);
+                printf("Decoding colour subimage\n");
+                decode_image(&file, &transform_colour_subimage, false);
+                write_image(&transform_colour_subimage, "transform_colour");
+            }; break;
             default:
                 printf("Not implemented transform: %s\n",transform_names[transform_type]);
                 exit(1);
@@ -475,6 +543,9 @@ int main(int argc, char* argv[]) {
         switch(transforms[i]) {
             case PREDICTOR_TRANSFORM:
                 apply_predictors(&image,&transform_predictor_subimage,transform_predictor_block_scale);
+                break;
+            case COLOUR_TRANSFORM:
+                apply_colour_transform(&image,&transform_colour_subimage,transform_colour_block_scale);
                 break;
             case SUBTRACT_GREEN_TRANSFORM:
                 apply_subtract_green(&image);
