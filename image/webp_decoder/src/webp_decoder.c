@@ -84,8 +84,8 @@ const char* transform_names[4] = {
 };
 
 struct prefix_code_entry {
-    symbol_t decoded_symbol;
-    uint8_t bits_real;
+    symbol_t symbol;
+    uint8_t bits;
 };
 struct prefix_code {
     struct prefix_code_entry *table;
@@ -93,14 +93,55 @@ struct prefix_code {
 };
 void print_prefix_code(const struct prefix_code code) {
     for(int i = 0; i < 1<<code.total_bits; i++) {
-        printf("%d %d\n",code.table[i].bits_real, code.table[i].decoded_symbol);
+        printf("%d: %d\n", code.table[i].symbol, code.table[i].bits);
     }
 }
 symbol_t read_prefix_code(struct bitstream* bitstream, const struct prefix_code code) {
     uint64_t idx = read_bits(bitstream, code.total_bits);
     bitstream->current_read -= code.total_bits;
-    bitstream->current_read += code.table[idx].bits_real;
-    return code.table[idx].decoded_symbol;
+    bitstream->current_read += code.table[idx].bits;
+    return code.table[idx].symbol;
+}
+
+void generate_canonical_code(struct prefix_code* code, const symbol_t* lengths, const symbol_t length_counts) {
+    symbol_t max_length = 0;
+    printf("Canonical code item count: %d\n",length_counts);
+    symbol_t starting_points[16] = {0};
+    for(int i = 0; i < length_counts; i++) {
+        if(lengths[i] == 0) continue;
+        if(lengths[i] > max_length) {
+            max_length = lengths[i];
+        }
+        assert(max_length < 16,"Invalid canonical Huffman code");
+        starting_points[lengths[i]]++;
+    }
+    printf("Canonical code length: %d\n",max_length);
+    for(int i = 1; i <= max_length; i++) {
+        starting_points[i] += starting_points[i-1];
+    }
+    struct prefix_code_entry* sorted_codes = malloc(sizeof(struct prefix_code_entry)*starting_points[max_length]);
+    for(symbol_t i = 0; i < length_counts; i++) {
+        symbol_t bits = lengths[i];
+        if(bits != 0) {
+            sorted_codes[starting_points[bits-1]].symbol = i;
+            sorted_codes[starting_points[bits-1]].bits = bits;
+            starting_points[bits-1]++;
+        }
+    }
+    symbol_t running_code = -1;
+    symbol_t prev_bits = 0;
+    code->total_bits = max_length;
+    code->table = malloc(sizeof(struct prefix_code_entry)<<max_length);
+    assert(code->table!=NULL,"Unable to allocate huffman table");
+    for(int i = 0; i < starting_points[max_length]; i++) {
+        struct prefix_code_entry entry = sorted_codes[i];
+        running_code++;
+        running_code <<= (entry.bits-prev_bits);
+        prev_bits = entry.bits;
+        for(int j = running_code<<(max_length-entry.bits); j < (running_code+1)<<(max_length-entry.bits); j++) {
+            code->table[j] = entry;
+        }
+    }
 }
 
 // ll prefix codes: low level code-length codes
@@ -110,29 +151,30 @@ static const int llcode_orders[llcodes] = {
 };
 void read_code_complex(struct bitstream* bitstream, struct prefix_code* code, symbol_t alphabet_size) {
     uint8_t code_lengths = read_bits(bitstream,4) + 4;
-    uint8_t llcode_lengths[llcodes] = {0};
+    symbol_t llcode_lengths[llcodes] = {0};
     for(int i = 0; i < code_lengths; i++) {
         llcode_lengths[llcode_orders[i]] = read_bits(bitstream,3);
-    }
-    for(int i = 0; i < llcodes; i++) {
-        printf("%d: %d\n",i,llcode_lengths[i]);
     }
     symbol_t alphabet_limit = alphabet_size;
     if(read_bit(bitstream)) {
         alphabet_limit = read_bits(bitstream,read_bits(bitstream,3)*2 + 2);
     }
     assert(alphabet_limit <= alphabet_size, "Alphabet too big");
+    struct prefix_code temp_prefix_code;
+    generate_canonical_code(&temp_prefix_code,llcode_lengths,llcodes);
+    print_prefix_code(temp_prefix_code);
     todo("complex prefix code: not fully implemented");
+    free(temp_prefix_code.table);
 }
 void read_code_simple(struct bitstream* bitstream, struct prefix_code* code, symbol_t alphabet_size) { 
     symbol_t multiple_symbols = read_bit(bitstream);
     code->total_bits = multiple_symbols;
     code->table = malloc((multiple_symbols+1)*sizeof(struct prefix_code));
-    code->table[0].bits_real = multiple_symbols;
-    code->table[0].decoded_symbol = read_bits(bitstream,read_bit(bitstream)?8:1);
+    code->table[0].bits = multiple_symbols;
+    code->table[0].symbol = read_bits(bitstream,read_bit(bitstream)?8:1);
     if(multiple_symbols) {
-        code->table[1].bits_real = multiple_symbols;
-        code->table[1].decoded_symbol = read_bits(bitstream,8);
+        code->table[1].bits = multiple_symbols;
+        code->table[1].symbol = read_bits(bitstream,8);
     }
 }
 
