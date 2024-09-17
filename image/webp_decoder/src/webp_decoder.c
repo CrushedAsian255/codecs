@@ -96,8 +96,12 @@ void print_prefix_code(const struct prefix_code code) {
         printf("%d: %d\n", code.table[i].symbol, code.table[i].bits);
     }
 }
-symbol_t read_prefix_code(struct bitstream* bitstream, const struct prefix_code code) {
-    uint64_t idx = read_bits(bitstream, code.total_bits);
+symbol_t read_from_prefix_code(struct bitstream* bitstream, const struct prefix_code code) {
+    uint64_t idx = 0;
+    for(int i = 0; i < code.total_bits; i++) {
+        idx <<= 1;
+        idx |= read_bit(bitstream);
+    }
     bitstream->current_read -= code.total_bits;
     bitstream->current_read += code.table[idx].bits;
     return code.table[idx].symbol;
@@ -105,7 +109,6 @@ symbol_t read_prefix_code(struct bitstream* bitstream, const struct prefix_code 
 
 void generate_canonical_code(struct prefix_code* code, const symbol_t* lengths, const symbol_t length_counts) {
     symbol_t max_length = 0;
-    printf("Canonical code item count: %d\n",length_counts);
     symbol_t starting_points[16] = {0};
     for(int i = 0; i < length_counts; i++) {
         if(lengths[i] == 0) continue;
@@ -115,7 +118,6 @@ void generate_canonical_code(struct prefix_code* code, const symbol_t* lengths, 
         assert(max_length < 16,"Invalid canonical Huffman code");
         starting_points[lengths[i]]++;
     }
-    printf("Canonical code length: %d\n",max_length);
     for(int i = 1; i <= max_length; i++) {
         starting_points[i] += starting_points[i-1];
     }
@@ -150,20 +152,56 @@ static const int llcode_orders[llcodes] = {
     17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 };
 void read_code_complex(struct bitstream* bitstream, struct prefix_code* code, symbol_t alphabet_size) {
-    uint8_t code_lengths = read_bits(bitstream,4) + 4;
+    uint8_t llcode_length = read_bits(bitstream,4) + 4;
     symbol_t llcode_lengths[llcodes] = {0};
-    for(int i = 0; i < code_lengths; i++) {
+    for(int i = 0; i < llcode_length; i++) {
         llcode_lengths[llcode_orders[i]] = read_bits(bitstream,3);
     }
-    symbol_t alphabet_limit = alphabet_size;
+    symbol_t max_entry_count = alphabet_size;
     if(read_bit(bitstream)) {
-        alphabet_limit = read_bits(bitstream,read_bits(bitstream,3)*2 + 2);
+        max_entry_count = read_bits(bitstream,read_bits(bitstream,3)*2 + 2);
     }
-    assert(alphabet_limit <= alphabet_size, "Alphabet too big");
+    assert(max_entry_count <= alphabet_size, "Alphabet too big");
     struct prefix_code temp_prefix_code;
     generate_canonical_code(&temp_prefix_code,llcode_lengths,llcodes);
-    print_prefix_code(temp_prefix_code);
-    todo("complex prefix code: not fully implemented");
+    
+    symbol_t* code_lengths = malloc(sizeof(symbol_t)*alphabet_size);
+    symbol_t read_count = 0;
+    symbol_t prev_read = 8;
+    for(int i = 0; i < max_entry_count && read_count < alphabet_size; i++) {
+        symbol_t read_symbol = read_from_prefix_code(bitstream,temp_prefix_code);
+        switch(read_symbol) {
+            default: case 0: {
+                code_lengths[read_count++] = 0;
+            } break;
+            case  1: case  2: case  3: case  4: case 5:
+            case  6: case  7: case  8: case  9: case 10:
+            case 11: case 12: case 13: case 14: case 15: {
+                code_lengths[read_count++] = read_symbol;
+                prev_read = read_symbol;
+            } break;
+            case 16: {
+                symbol_t repeat = read_bits(bitstream,2) + 3;
+                for(int j = 0; j < repeat; j++) {
+                    code_lengths[read_count++] = prev_read;
+                }
+            } break;
+            case 17: {
+                symbol_t repeat = read_bits(bitstream,3) + 3;
+                for(int j = 0; j < repeat; j++) {
+                    code_lengths[read_count++] = 0;
+                }
+            } break; 
+            case 18: {
+                symbol_t repeat = read_bits(bitstream,7) + 11;
+                for(int j = 0; j < repeat; j++) {
+                    code_lengths[read_count++] = 0;
+                }
+            } break;
+        }
+    }
+
+    generate_canonical_code(code,code_lengths,read_count);
     free(temp_prefix_code.table);
 }
 void read_code_simple(struct bitstream* bitstream, struct prefix_code* code, symbol_t alphabet_size) { 
@@ -186,13 +224,14 @@ void decode_prefix_group(struct bitstream* bitstream, struct prefix_group* prefi
         symbol_t alphabet_size = 256;
         if(i == 0) alphabet_size += cache_size + 24;
         if(i == 4) alphabet_size = 40;
+        printf("Channel %d (%d symbols): ",i,alphabet_size);
         if(read_bit(bitstream)) {
+            printf("Simple code\n");
             read_code_simple(bitstream, &(prefix_group->codes[i]),alphabet_size);
         } else {
             read_code_complex(bitstream, &(prefix_group->codes[i]),alphabet_size);
+            printf("Prefix code, %d bits\n",prefix_group->codes[i].total_bits);
         }
-        printf("Channel %d\n",i);
-        print_prefix_code(prefix_group->codes[i]);
     }
 }
 
@@ -214,7 +253,7 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
         uint32_t meta_prefix_image_width = ceil_div(image->width,meta_prefix_block_size);
         uint32_t meta_prefix_image_height = ceil_div(image->height,meta_prefix_block_size);
         struct image_data meta_prefix_image = malloc_new_image(meta_prefix_image_width,meta_prefix_image_height);
-        printf("Decoding meta-prefix subimage\n");
+        printf("Decoding meta-prefix subimage of size %d x %d\n",meta_prefix_image_width,meta_prefix_image_height);
         decode_image(bitstream,&meta_prefix_image,0);
         for(int i = 0; i < meta_prefix_image_width*meta_prefix_image_height; i++) {
             symbol_t meta_prefix_group_id = (meta_prefix_image.data[i]>>8)&0xffff;
@@ -230,18 +269,18 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
         decode_prefix_group(bitstream,&groups[i],colour_cache_size);
     }
 
-    for(int y = 0; y < image->height; y++) {
-        for(int x = 0; x < image->width; x++) {
-            const struct prefix_group group = groups[0];
-            symbol_t g = read_prefix_code(bitstream,group.codes[0]);
-            if(g < 256) {
-                symbol_t r = read_prefix_code(bitstream,group.codes[1]);
-                symbol_t b = read_prefix_code(bitstream,group.codes[2]);
-                symbol_t a = read_prefix_code(bitstream,group.codes[3]);
-                image->data[y*image->width+x]=a<<24 | r<<16 | g<<8 | b;
-            } else {
-                todo("not implemented");
-            }
+    for(int pixel = 0; pixel < image->height * image->width; pixel++) {
+        const struct prefix_group group = groups[0];
+        symbol_t g = read_from_prefix_code(bitstream,group.codes[0]);
+        if(g < 256) {
+            symbol_t r = read_from_prefix_code(bitstream,group.codes[1]);
+            symbol_t b = read_from_prefix_code(bitstream,group.codes[2]);
+            symbol_t a = read_from_prefix_code(bitstream,group.codes[3]);
+            image->data[pixel]=a<<24 | r<<16 | g<<8 | b;
+        } else if (g < 256+24) {
+            todo("not implemented");
+        } else {
+            todo("not implemented");
         }
     }
 
