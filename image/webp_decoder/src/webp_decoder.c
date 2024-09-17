@@ -289,7 +289,6 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
         meta_prefix_image = malloc_new_image(meta_prefix_image_width,meta_prefix_image_height);
         printf("Decoding meta-prefix subimage of size %d x %d\n",meta_prefix_image_width,meta_prefix_image_height);
         decode_image(bitstream,&meta_prefix_image,0);
-        write_image(&meta_prefix_image,"meta-prefix");
         for(int i = 0; i < meta_prefix_image_width*meta_prefix_image_height; i++) {
             symbol_t meta_prefix_group_id = (meta_prefix_image.data[i]>>8)&0xffff;
             if(meta_prefix_group_id >= prefix_group_count) prefix_group_count = meta_prefix_group_id+1;
@@ -575,7 +574,6 @@ int main(int argc, char* argv[]) {
                 transform_predictor_subimage = malloc_new_image(subimage_width,subimage_height);
                 printf("Decoding predictor subimage\n");
                 decode_image(&file,&transform_predictor_subimage,false);
-                write_image(&transform_predictor_subimage,"transform_predictor");
             }; break;
             case COLOUR_TRANSFORM: {
                 transform_colour_block_scale = read_bits(&file,3)+2;
@@ -584,7 +582,6 @@ int main(int argc, char* argv[]) {
                 transform_colour_subimage = malloc_new_image(subimage_width, subimage_height);
                 printf("Decoding colour subimage\n");
                 decode_image(&file, &transform_colour_subimage, false);
-                write_image(&transform_colour_subimage, "transform_colour");
             }; break;
             default:
                 printf("Not implemented transform: %s\n",transform_names[transform_type]);
@@ -596,7 +593,6 @@ int main(int argc, char* argv[]) {
     struct image_data image = malloc_new_image(image_width,image_height);
     printf("Decoding main image\n");
     decode_image(&file,&image,true);
-    write_image(&image,"image_pretransform");
     for(int i = transform_count-1; i >= 0; i--) {
         switch(transforms[i]) {
             case PREDICTOR_TRANSFORM:
@@ -613,5 +609,5 @@ int main(int argc, char* argv[]) {
                 exit(1);
         }
     }
-    write_image(&image,"output");
+    write_image(&image,argv[1]);
 }
