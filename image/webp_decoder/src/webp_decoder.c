@@ -317,7 +317,7 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
             uint64_t length = read_lz77_code(bitstream,g-256);
             symbol_t distance_prefix = read_from_prefix_code(bitstream,group.codes[4]);
             uint64_t distance_code = read_lz77_code(bitstream,distance_prefix);
-            int64_t distance = distance_code - 120;
+            int64_t distance = distance_code - 119;
             if(distance_code < 120) {
                 int8_t x_off = lz77_distance_neighbourhood[(distance_code<<1)];
                 int8_t y_off = lz77_distance_neighbourhood[(distance_code<<1)+1];
@@ -342,6 +342,64 @@ void decode_image(struct bitstream* bitstream, struct image_data* image, bool is
     free(groups);
 }
 
+int32_t ALPHA(pixel_t x) {return x>>24;}
+int32_t RED(pixel_t x) {return (x>>16)&0xff;}
+int32_t GREEN(pixel_t x) {return (x>>8)&0xff;}
+int32_t BLUE(pixel_t x) {return x&0xff;}
+
+pixel_t add_pixels(pixel_t a, pixel_t b) {
+    pixel_t o = 0;
+    o |= (ALPHA(a) + ALPHA(b))&0xff;
+    o <<= 8;
+    o |= (RED(a) + RED(b))&0xff;
+    o <<= 8;
+    o |= (GREEN(a) + GREEN(b))&0xff;
+    o <<= 8;
+    o |= (BLUE(a) + BLUE(b))&0xff;
+    return o;
+}
+
+void apply_predictors(struct image_data* image, const struct image_data* predictor_map, uint8_t block_scale) {
+    for(int y = 0; y < image->height; y++) {
+        for(int x = 0; x < image->width; x++) {
+            pixel_t predictor_pixel = predictor_map->data[predictor_map->width * (y >> block_scale) + (x >> block_scale)];
+            int8_t predictor = (predictor_pixel >> 8) & 0xff;
+            pixel_t predicted_pixel = 0x00000000;
+            if(x == 0 && y == 0) {
+                predicted_pixel = 0xff000000;
+            } else if(x == 0) {
+                predicted_pixel = image->data[(y-1)*image->width];
+            } else if(y == 0) {
+                predicted_pixel = image->data[x-1];
+            } else {
+                pixel_t L  = image->data[y*image->width+x-1];
+                pixel_t T  = image->data[(y-1)*image->width+x];
+                pixel_t TL = image->data[(y-1)*image->width+x-1];
+                pixel_t TR = image->data[(y-1)*image->width+x+1];
+                
+                switch(predictor) {
+                    case 0:
+                        predicted_pixel = 0xff000000;
+                        break;
+                    default: 
+                        printf("%d\n",predictor);
+                        todo("all the predictors");
+                }
+            }
+            image->data[y*image->width+x] = add_pixels(predicted_pixel,image->data[y*image->width+x]);
+        }
+    }
+}
+
+void apply_subtract_green(struct image_data* image) {
+    for(int i = 0; i < image->height*image->width; i++) {
+        pixel_t output_pixel = image->data[i]&0xff00ff00;
+        output_pixel |= (BLUE(image->data[i])+GREEN(image->data[i])) & 0xff;
+        output_pixel |= ((RED(image->data[i])+GREEN(image->data[i])) & 0xff)<<16;
+        image->data[i]=output_pixel;
+    }
+}
+
 int main(int argc, char* argv[]) {
     assert(argc >= 2, "No input file!");
     FILE* input_file = fopen(argv[1],"rb");
@@ -362,7 +420,9 @@ int main(int argc, char* argv[]) {
     assert(read_bits(&file,32)==file_length-8, "Error: invalid RIFF header");
     assert(read_bits(&file,32)==(*(uint32_t*)"WEBP"),"Error: invalid WebP header"); 
     assert(read_bits(&file,32)==(*(uint32_t*)"VP8L"),"Error: not a lossless WebP"); 
-    assert(read_bits(&file,32)==file_length-20,"Error: invalid WebP header");    
+    uint32_t a = read_bits(&file,32);
+    uint32_t b = file_length-20-(a&1);
+    assert(a==b,"Error: invalid WebP header");    
     assert(read_bits(&file,8)==0x2f,"Error: invalid WebP header");  
     uint16_t image_width = read_bits(&file,14) + 1;
     uint16_t image_height = read_bits(&file,14) + 1;
@@ -372,7 +432,7 @@ int main(int argc, char* argv[]) {
     enum transform_type transforms[4];
     uint8_t transform_count = 0;
 
-    uint32_t transform_predictor_block_size = 0;
+    uint32_t transform_predictor_block_scale = 0;
     struct image_data transform_predictor_subimage;
 
     while(read_bit(&file)) {
@@ -383,9 +443,9 @@ int main(int argc, char* argv[]) {
             case SUBTRACT_GREEN_TRANSFORM:
                 break;
             case PREDICTOR_TRANSFORM: {
-                transform_predictor_block_size = (1<<(read_bits(&file,3)+2));
-                uint32_t subimage_width = ceil_div(image_width,transform_predictor_block_size);
-                uint32_t subimage_height = ceil_div(image_height,transform_predictor_block_size);
+                transform_predictor_block_scale = read_bits(&file,3)+2;
+                uint32_t subimage_width = ceil_div(image_width,1<<transform_predictor_block_scale);
+                uint32_t subimage_height = ceil_div(image_height,1<<transform_predictor_block_scale);
                 transform_predictor_subimage = malloc_new_image(subimage_width,subimage_height);
                 printf("Decoding predictor subimage\n");
                 decode_image(&file,&transform_predictor_subimage,false);
@@ -404,6 +464,12 @@ int main(int argc, char* argv[]) {
     write_image(&image,"image_pretransform");
     for(int i = transform_count-1; i >= 0; i--) {
         switch(transforms[i]) {
+            case PREDICTOR_TRANSFORM:
+                apply_predictors(&image,&transform_predictor_subimage,transform_predictor_block_scale);
+                break;
+            case SUBTRACT_GREEN_TRANSFORM:
+                apply_subtract_green(&image);
+                break;
             default:
                 printf("Not implemented transform: %s\n",transform_names[transforms[i]]);
                 exit(1);
