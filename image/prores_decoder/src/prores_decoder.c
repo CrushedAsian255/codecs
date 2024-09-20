@@ -159,7 +159,7 @@ frame_header read_frame_header(uint8_t *data, uint16_t* length) {
     hdr.colour_primaries = data[14];
     hdr.transfer_function = data[15];
     hdr.colour_space = data[16];
-    assert(data[17]==0,"");
+    assert((data[17]&0xf)==0,"Alpha is not supported");
 
     uint8_t flags = data[19];
     data += 20;
@@ -220,5 +220,15 @@ int main(int argc, char* argv[]) {
         frame_hdr.colour_space,
         frame_hdr.colour_space<=17?colour_space[frame_hdr.colour_space]:"Unknown"
     );
+    printf("Luma matrix: \n");
+    for(int i = 0; i < 64; i++) {
+        printf("%3d ",frame_hdr.qmat_luma[i]);
+        if((i&7)==7) printf("\n");
+    }
+    printf("Chroma matrix: \n");
+    for(int i = 0; i < 64; i++) {
+        printf("%3d ",frame_hdr.qmat_chroma[i]);
+        if((i&7)==7) printf("\n");
+    }
     free(_file_data);
 }
